@@ -1,66 +1,135 @@
 from tkinter import *
 from tkinter.filedialog import asksaveasfilename,askopenfilename
-file_path=''
 import subprocess
 
-compiler=Tk()
-compiler.title('IDE')
+class TextLineNumbers(Canvas):
+    def __init__(self, *args, **kwargs):
+        Canvas.__init__(self, *args, **kwargs)
+        self.textwidget = None
 
-def save_as():
-    if file_path=='':
-        path=asksaveasfilename(filetypes=[('Python Files','*.py')])
-    else:
-        path=file_path
-    with open(path,'w') as file:
-        code=editor.get('1.0',END)
-        file.write(code)
-        set_file_path(path)
+    def attach(self, text_widget):
+        self.textwidget = text_widget
 
-def open_file():
-    path=askopenfilename(filetypes=[('Python Files','*.py')])
-    with open(path,'r') as file:
-        code=file.read()
-        editor.delete('1.0',END)
-        editor.insert('1.0',code)
-        set_file_path(path)
+    def redraw(self, *args):
+        '''Redraw the line numbers'''
+        self.delete("all")
 
-def set_file_path(path):
-    global file_path
-    file_path=path
+        i = self.textwidget.index("@0,0")
+        while True :
+            dline= self.textwidget.dlineinfo(i)
+            if dline is None: break
+            y = dline[1]
+            linenum = str(i).split(".")[0]
+            self.create_text(2,y,anchor="nw", text=linenum, fill="#606366")
+            i = self.textwidget.index("%s+1line" % i)
 
-def run():
-    if file_path=='':
-        save_prompt=Toplevel()
-        text=Label(save_prompt,text='Please save your code')
-        text.pack()
-        return
-    command=f'python {file_path}'
-    process=subprocess.Popen(command,stdout=subprocess.PIPE,stderr=subprocess.PIPE,shell=True)
-    output,error=process.communicate()
-    code_output.insert('1.0',output)
-    code_output.insert('1.0',error)
+class CustomText(Text):
+    def __init__(self, *args, **kwargs):
+        Text.__init__(self, *args, **kwargs)
+        # create a proxy for the text widget
+        self._orig = self._w + "_orig"
+        self.tk.call("rename", self._w, self._orig)
+        self.tk.call("interp", "alias", self._w, "_proxy", self._orig)
 
-menu_bar=Menu(compiler)
+    def _proxy(self, *args):
+        # let the actual widget perform the command
+        cmd = (self._orig,) + args
+        result = self.tk.call(cmd)
 
-run_bar=Menu(menu_bar,tearoff=0)
-run_bar.add_command(label='Run',command=run)
-menu_bar.add_cascade(label='Run',menu=run_bar)
+        # generate an event if something was added or deleted,
+        # or the cursor position changed
+        if (args[0] in ("insert", "delete") or
+            args[0:3] == ("mark", "set", "insert") or
+            args[0:2] == ("xview", "moveto") or
+            args[0:2] == ("xview", "scroll") or
+            args[0:2] == ("yview", "moveto") or
+            args[0:2] == ("yview", "scroll")
+        ):
+            self.event_generate("<<Change>>", when="tail")
 
-file_menu=Menu(menu_bar,tearoff=0)
-file_menu.add_command(label='Open',command=open_file)
-file_menu.add_command(label='Save',command=save_as)
-file_menu.add_command(label='Save As',command=save_as)
-file_menu.add_command(label='Exit',command=exit)
-menu_bar.add_cascade(label='File',menu=run_bar)
+        # return what the actual widget returned
+        return result
+
+class IDE:
+    def __init__(self, root):
+        self.root = root
+        self.file_path = ''
+        self.root.title('IDE')
+        self.root.configure(bg="#263238")
+
+        self.menu_bar=Menu(self.root, bg="#263238", fg="white")
+
+        self.run_bar=Menu(self.menu_bar,tearoff=0, bg="#263238", fg="white")
+        self.run_bar.add_command(label='Run',command=self.run)
+        self.menu_bar.add_cascade(label='Run',menu=self.run_bar)
+
+        self.file_menu=Menu(self.menu_bar,tearoff=0, bg="#263238", fg="white")
+        self.file_menu.add_command(label='Open',command=self.open_file)
+        self.file_menu.add_command(label='Save',command=self.save_as)
+        self.file_menu.add_command(label='Save As',command=self.save_as)
+        self.file_menu.add_command(label='Exit',command=self.root.destroy)
+        self.menu_bar.add_cascade(label='File',menu=self.file_menu)
+
+        self.root.config(menu=self.menu_bar)
+
+        self.paned_window = PanedWindow(self.root, orient=VERTICAL, bg="#263238")
+        self.paned_window.pack(fill=BOTH, expand=1)
+
+        self.editor_frame = Frame(self.paned_window, bg="#263238")
+        self.paned_window.add(self.editor_frame, weight=2)
+
+        self.linenumbers = TextLineNumbers(self.editor_frame, width=30, bg="#37474F")
+        self.linenumbers.pack(side="left", fill="y")
+
+        self.editor=CustomText(self.editor_frame, bg="#263238", fg="white", insertbackground="white", font=("Courier New", 12))
+        self.editor.pack(side="left", fill="both", expand=True)
+
+        self.linenumbers.attach(self.editor)
+
+        self.editor.bind("<<Change>>", self.on_change)
+        self.editor.bind("<Configure>", self.on_change)
+
+        self.code_output=Text(self.paned_window, height=10, bg="#263238", fg="white", font=("Courier New", 12))
+        self.paned_window.add(self.code_output, weight=1)
+
+    def set_file_path(self, path):
+        self.file_path=path
+
+    def on_change(self, event):
+        self.linenumbers.redraw()
+
+    def open_file(self):
+        path=askopenfilename(filetypes=[('Python Files','*.py')])
+        with open(path,'r') as file:
+            code=file.read()
+            self.editor.delete('1.0',END)
+            self.editor.insert('1.0',code)
+            self.set_file_path(path)
+
+    def save_as(self):
+        if self.file_path=='':
+            path=asksaveasfilename(filetypes=[('Python Files','*.py')])
+        else:
+            path=self.file_path
+        with open(path,'w') as file:
+            code=self.editor.get('1.0',END)
+            file.write(code)
+            self.set_file_path(path)
+
+    def run(self):
+        if self.file_path=='':
+            save_prompt=Toplevel()
+            text=Label(save_prompt,text='Please save your code')
+            text.pack()
+            return
+        command=f'python {self.file_path}'
+        process=subprocess.Popen(command,stdout=subprocess.PIPE,stderr=subprocess.PIPE,shell=True)
+        output,error=process.communicate()
+        self.code_output.insert('1.0',output)
+        self.code_output.insert('1.0',error)
 
 
-compiler.config(menu=menu_bar)
-
-
-editor=Text()
-editor.pack()
-
-code_output=Text(height=10)
-code_output.pack()
-
-compiler.mainloop()
+if __name__ == "__main__":
+    compiler=Tk()
+    ide = IDE(compiler)
+    compiler.mainloop()
